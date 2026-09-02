@@ -1,98 +1,93 @@
 #!/usr/bin/env node
 /**
- * Clean-install probe: spawn an MCP server from a package spec over stdio,
- * initialize, list tools, and write a JSON result.
+ * Clean-install probe → two cells: `install:<host>` (spawn/connect, initialize,
+ * tools/list count) and `catalog:<host>` (full tools/list with schemas).
  *
- *   node scripts/probe.mjs --spec "npx -y @org/server" --out result.json [--timeout 90000]
+ *   node scripts/probe.mjs --spec "npx -y @org/server" [--out dir] [--timeout 90000]
+ *   node scripts/probe.mjs --url https://host/mcp [--job-url …]
  *
- * Spec forms: "npx [-y] <pkg> [args]", "uvx <pkg> [args]", or any "<cmd> [args]".
- * On Windows, npx/uvx resolve to their .cmd shims (the classic ENOENT).
+ * Also writes the legacy result.json (--legacy-out) for the Wave-0 workflow.
  */
 import { writeFileSync } from "node:fs";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-
-function arg(name, fallback) {
-  const i = process.argv.indexOf(`--${name}`);
-  return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : fallback;
-}
+import { arg, baseCell, commonArgs, emit, fetchJob, hostId } from "./lib/cell.mjs";
+import { classifyError, connect, listAllTools } from "./lib/mcp.mjs";
 
 const spec = arg("spec");
-const out = arg("out", "result.json");
-const timeoutMs = Number(arg("timeout", "90000"));
-if (!spec) {
-  console.error("usage: probe.mjs --spec <spec> [--out file] [--timeout ms]");
+const url = arg("url");
+const legacyOut = arg("legacy-out");
+const common = commonArgs();
+if (!spec && !url) {
+  console.error("usage: probe.mjs --spec <spec> | --url <url> [--out dir] [--timeout ms]");
   process.exit(2);
 }
-
-const tokens = spec.match(/(?:[^\s"]+|"[^"]*")+/g).map((t) => t.replace(/^"|"$/g, ""));
-let [command, ...args] = tokens;
-if (process.platform === "win32" && ["npx", "npm", "uvx", "pnpm"].includes(command)) {
-  command = `${command}.cmd`;
-}
-
-const result = {
-  spec,
-  os: process.platform,
-  arch: process.arch,
-  node: process.version,
-  startedAt: new Date().toISOString(),
-  ok: false,
-  durationMs: 0,
-  server: null,
-  protocolVersion: null,
-  tools: [],
-  toolCount: 0,
-  error: null,
-};
-
+const job = await fetchJob(common.jobUrl, common.secret).catch(() => null);
+const headers = job?.headers ?? {};
+const host = hostId();
 const t0 = Date.now();
-const transport = new StdioClientTransport({ command, args, stderr: "pipe" });
-let stderr = "";
-transport.stderr?.on("data", (d) => {
-  stderr += String(d);
-  if (stderr.length > 8000) stderr = stderr.slice(-8000);
-});
-const client = new Client({ name: "agentwares-runner", version: "0.1.0" });
-
-const timer = setTimeout(() => {
-  result.error = { code: "TIMEOUT", cause: `no initialize/tools.list within ${timeoutMs}ms`, stderr };
-  finish(1);
-}, timeoutMs);
-
-async function finish(code) {
-  clearTimeout(timer);
-  result.durationMs = Date.now() - t0;
-  try {
-    await client.close();
-  } catch {
-    /* ignore */
-  }
-  writeFileSync(out, JSON.stringify(result, null, 2));
-  console.log(JSON.stringify({ ok: result.ok, toolCount: result.toolCount, durationMs: result.durationMs, error: result.error?.code ?? null }));
-  process.exit(code);
-}
-
+const specText = spec ?? url;
+let conn;
 try {
-  await client.connect(transport);
-  const sv = client.getServerVersion();
-  result.server = sv ? { name: sv.name, version: sv.version } : null;
-  const caps = client.getServerCapabilities();
-  result.capabilities = caps ? Object.keys(caps) : [];
-  const { tools } = await client.listTools();
-  result.tools = tools.map((t) => ({
+  conn = await connect({ spec, url, headers, timeoutMs: common.timeoutMs });
+  const tools = await listAllTools(conn.client);
+  const durationMs = Date.now() - t0;
+  const caps = conn.client.getServerCapabilities?.() ?? {};
+  const catalogTools = tools.map((t) => ({
     name: t.name,
-    description: (t.description ?? "").slice(0, 200),
-    hasInputSchema: Boolean(t.inputSchema),
-    annotations: t.annotations ?? null,
+    description: t.description ?? "",
+    inputSchema: t.inputSchema ?? { type: "object" },
+    ...(t.outputSchema ? { outputSchema: t.outputSchema } : {}),
+    ...(t.annotations && Object.keys(t.annotations).length ? { annotations: t.annotations } : {}),
   }));
-  result.toolCount = tools.length;
-  result.ok = tools.length > 0;
-  if (!result.ok) result.error = { code: "NO_TOOLS", cause: "tools/list returned an empty list", stderr };
-  await finish(result.ok ? 0 : 1);
+  const catalog = baseCell(`catalog:${host}`, "catalog", tools.length ? "pass" : "fail", `${tools.length} tools`, {
+    durationMs,
+    detail: {
+      hash: "",
+      tools: catalogTools,
+      capturedAt: new Date().toISOString(),
+      server: conn.serverVersion,
+      protocolVersion: conn.protocolVersion,
+    },
+    ...(tools.length ? {} : { error: { code: "NO_TOOLS", cause: "tools/list returned an empty list", retryable: false } }),
+  });
+  const install = baseCell(
+    `install:${host}`,
+    "install",
+    tools.length ? "pass" : "fail",
+    tools.length ? `${tools.length} tools in ${(durationMs / 1000).toFixed(1)} s` : "no tools",
+    {
+      durationMs,
+      detail: {
+        spec: specText,
+        node: process.version,
+        arch: process.arch,
+        server: conn.serverVersion,
+        protocolVersion: conn.protocolVersion,
+        toolCount: tools.length,
+        capabilities: Object.keys(caps),
+        stderrTail: conn.stderr().slice(-1500),
+      },
+      ...(tools.length ? {} : { error: catalog.error }),
+    },
+  );
+  await emit(install, common);
+  await emit(catalog, common);
+  if (legacyOut) {
+    writeFileSync(
+      legacyOut,
+      JSON.stringify({ spec: specText, os: process.platform, arch: process.arch, node: process.version, ok: tools.length > 0, durationMs, server: conn.serverVersion, protocolVersion: conn.protocolVersion, toolCount: tools.length, tools: catalogTools.map((t) => ({ name: t.name, description: t.description.slice(0, 200), hasInputSchema: Boolean(t.inputSchema) })), error: install.error ?? null }, null, 2),
+    );
+  }
+  await conn.close();
+  process.exit(tools.length ? 0 : 1);
 } catch (e) {
-  const msg = e instanceof Error ? e.message : String(e);
-  const code = /ENOENT/.test(msg) ? "SPAWN_ENOENT" : /timed out|timeout/i.test(msg) ? "TIMEOUT" : "CONNECT_FAILED";
-  result.error = { code, cause: msg.slice(0, 500), stderr };
-  await finish(1);
+  const error = classifyError(e);
+  const install = baseCell(`install:${host}`, "install", "fail", `${error.code}: ${error.cause.slice(0, 80)}`, {
+    durationMs: Date.now() - t0,
+    detail: { spec: specText, node: process.version, arch: process.arch, server: null, toolCount: 0, stderrTail: conn?.stderr().slice(-1500) ?? "" },
+    error,
+  });
+  await emit(install, common);
+  if (legacyOut) writeFileSync(legacyOut, JSON.stringify({ spec: specText, os: process.platform, ok: false, error }, null, 2));
+  await conn?.close();
+  process.exit(1);
 }

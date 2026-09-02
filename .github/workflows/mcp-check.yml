@@ -1,0 +1,141 @@
+name: mcp-check
+# Full mcpcheck matrix for one server. Dispatched by agentcheck's tick; every
+# cell POSTs itself back (signed) as soon as it finishes, so partial results
+# render while the slower cells run. Inputs never carry secrets — anything
+# sensitive comes from the signed job manifest at job_url.
+on:
+  workflow_dispatch:
+    inputs:
+      package_spec:
+        description: 'stdio spec, e.g. "npx -y @org/server" or "uvx some-server" (empty for remote)'
+        required: false
+        default: ""
+        type: string
+      server_url:
+        description: "Streamable HTTP URL (empty for package specs)"
+        required: false
+        default: ""
+        type: string
+      target_id:
+        description: agentcheck target id
+        required: true
+        type: string
+      run_key:
+        description: idempotency key for this run
+        required: true
+        type: string
+      callback_url:
+        description: POST /api/runner/callback (optional; artifacts are always uploaded)
+        required: false
+        default: ""
+        type: string
+      job_url:
+        description: signed job manifest URL (optional)
+        required: false
+        default: ""
+        type: string
+      cells:
+        description: "comma list of cell kinds: install,catalog,errors,compat,conformance"
+        required: false
+        default: "install,catalog,errors,compat,conformance"
+        type: string
+      timeout_ms:
+        description: per-probe timeout in milliseconds
+        required: false
+        default: "90000"
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  MCP_PY_N: "2.1.1"
+  MCP_PY_PREV: "2.0.1"
+
+jobs:
+  matrix:
+    name: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    env:
+      MCPCHECK_HOST: ${{ matrix.os }}
+      CALLBACK_URL: ${{ inputs.callback_url }}
+      JOB_URL: ${{ inputs.job_url }}
+      AGENTCHECK_CALLBACK_SECRET: ${{ secrets.AGENTCHECK_CALLBACK_SECRET }}
+      NPM_CONFIG_CACHE: ${{ runner.temp }}/npm-clean-cache
+      npm_config_yes: "true"
+      TARGET: ${{ inputs.server_url != '' && format('--url {0}', inputs.server_url) || format('--spec "{0}"', inputs.package_spec) }}
+      COMMON: --out out --target-id "${{ inputs.target_id }}" --run-key "${{ inputs.run_key }}" --timeout ${{ inputs.timeout_ms }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: astral-sh/setup-uv@v6
+        if: ${{ startsWith(inputs.package_spec, 'uvx') || contains(inputs.cells, 'compat') }}
+      - name: Install runner deps (clean cache)
+        run: npm ci --no-audit --no-fund
+        shell: bash
+
+      - name: install + catalog
+        if: ${{ contains(inputs.cells, 'install') || contains(inputs.cells, 'catalog') }}
+        continue-on-error: true
+        shell: bash
+        run: node scripts/probe.mjs $TARGET $COMMON
+
+      - name: errors (ubuntu only)
+        if: ${{ contains(inputs.cells, 'errors') && matrix.os == 'ubuntu-latest' }}
+        continue-on-error: true
+        shell: bash
+        run: node scripts/errors.mjs $TARGET $COMMON
+
+      - name: compat ts-sdk N
+        if: ${{ contains(inputs.cells, 'compat') }}
+        continue-on-error: true
+        shell: bash
+        run: node scripts/compat-ts.mjs $TARGET $COMMON --slot N
+      - name: compat ts-sdk N-1
+        if: ${{ contains(inputs.cells, 'compat') }}
+        continue-on-error: true
+        shell: bash
+        run: node scripts/compat-ts.mjs $TARGET $COMMON --slot N-1
+      - name: compat py-sdk N
+        if: ${{ contains(inputs.cells, 'compat') }}
+        continue-on-error: true
+        shell: bash
+        run: node scripts/compat-py.mjs $TARGET $COMMON --slot N --mcp-version $MCP_PY_N
+      - name: compat py-sdk N-1
+        if: ${{ contains(inputs.cells, 'compat') }}
+        continue-on-error: true
+        shell: bash
+        run: node scripts/compat-py.mjs $TARGET $COMMON --slot N-1 --mcp-version $MCP_PY_PREV
+
+      - name: compat claude-cli (ubuntu only, needs ANTHROPIC_API_KEY)
+        if: ${{ contains(inputs.cells, 'compat') && matrix.os == 'ubuntu-latest' }}
+        continue-on-error: true
+        shell: bash
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -n "$ANTHROPIC_API_KEY" ]; then
+            npm i -g @anthropic-ai/claude-code >/dev/null 2>&1 || true
+            node scripts/compat-claude.mjs $TARGET $COMMON --catalog "$(ls out/catalog_*.json 2>/dev/null | head -1)"
+          else
+            echo "ANTHROPIC_API_KEY not set; claude-cli cell skipped"
+          fi
+
+      - name: conformance (remote, ubuntu only)
+        if: ${{ contains(inputs.cells, 'conformance') && inputs.server_url != '' && matrix.os == 'ubuntu-latest' }}
+        continue-on-error: true
+        shell: bash
+        run: node scripts/conformance.mjs --url "${{ inputs.server_url }}" $COMMON
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cells-${{ matrix.os }}
+          path: out/*.json
+          if-no-files-found: warn
