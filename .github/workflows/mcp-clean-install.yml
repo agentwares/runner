@@ -1,0 +1,67 @@
+name: mcp-clean-install
+on:
+  workflow_dispatch:
+    inputs:
+      package_spec:
+        description: 'How to start the server, e.g. "npx -y @org/server" or "uvx some-server"'
+        required: true
+        type: string
+      target_id:
+        description: agentcheck target id
+        required: true
+        type: string
+      run_key:
+        description: idempotency key for this run
+        required: true
+        type: string
+      callback_url:
+        description: where to POST the signed result (optional)
+        required: false
+        type: string
+      timeout_ms:
+        description: probe timeout in milliseconds
+        required: false
+        default: "90000"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: astral-sh/setup-uv@v6
+        if: ${{ startsWith(inputs.package_spec, 'uvx') }}
+      - name: Install runner deps (clean cache)
+        run: npm ci --no-audit --no-fund
+      - name: Probe
+        id: probe
+        continue-on-error: true
+        run: node scripts/probe.mjs --spec "${{ inputs.package_spec }}" --out result-${{ matrix.os }}.json --timeout ${{ inputs.timeout_ms }}
+        env:
+          NPM_CONFIG_CACHE: ${{ runner.temp }}/npm-clean-cache
+          npm_config_yes: "true"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: result-${{ matrix.os }}
+          path: result-${{ matrix.os }}.json
+          if-no-files-found: warn
+      - name: Post result
+        if: ${{ inputs.callback_url != '' }}
+        run: node scripts/post.mjs --file result-${{ matrix.os }}.json --url "${{ inputs.callback_url }}" --target-id "${{ inputs.target_id }}" --run-key "${{ inputs.run_key }}" --os "${{ matrix.os }}"
+        env:
+          AGENTCHECK_CALLBACK_SECRET: ${{ secrets.AGENTCHECK_CALLBACK_SECRET }}
+      - name: Fail job if probe failed
+        if: ${{ steps.probe.outcome == 'failure' }}
+        run: exit 1
