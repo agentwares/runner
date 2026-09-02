@@ -3,6 +3,10 @@
  * any "<cmd> [args]") or a Streamable HTTP URL, with either the current SDK
  * (N) or the previous minor (N-1, installed as the `mcp-sdk-prev` alias).
  */
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
 export function parseSpec(spec) {
   const tokens = spec.match(/(?:[^\s"]+|"[^"]*")+/g).map((t) => t.replace(/^"|"$/g, ""));
   let [command, ...args] = tokens;
@@ -14,13 +18,22 @@ export function parseSpec(spec) {
 
 export async function loadSdk(slot = "N") {
   const base = slot === "N-1" ? "mcp-sdk-prev" : "@modelcontextprotocol/sdk";
-  const [{ Client }, { StdioClientTransport }, { StreamableHTTPClientTransport }, pkg] = await Promise.all([
+  const [{ Client }, { StdioClientTransport }, { StreamableHTTPClientTransport }] = await Promise.all([
     import(`${base}/client/index.js`),
     import(`${base}/client/stdio.js`),
     import(`${base}/client/streamableHttp.js`),
-    import(`${base}/package.json`, { with: { type: "json" } }),
   ]);
-  return { Client, StdioClientTransport, StreamableHTTPClientTransport, version: pkg.default.version };
+  return { Client, StdioClientTransport, StreamableHTTPClientTransport, version: sdkVersion(base) };
+}
+
+/** Read node_modules/<base>/package.json directly: the SDK's exports map does not expose it. */
+export function sdkVersion(base) {
+  try {
+    const file = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "node_modules", base, "package.json");
+    return JSON.parse(readFileSync(file, "utf8")).version ?? "unknown";
+  } catch {
+    return "unknown";
+  }
 }
 
 /**

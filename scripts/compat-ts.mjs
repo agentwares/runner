@@ -46,7 +46,7 @@ try {
   process.exit(status === "pass" ? 0 : 1);
 } catch (e) {
   const error = classifyError(e);
-  const cell = baseCell(id, "compat", "fail", `${error.code}: ${error.cause.slice(0, 80)}`, {
+  const cell = baseCell(id, "compat", error.code === "AUTH_REQUIRED" ? "skip" : "fail", error.code === "AUTH_REQUIRED" ? "needs credentials (401)" : `${error.code}: ${error.cause.slice(0, 80)}`, {
     durationMs: Date.now() - t0,
     detail: { client: "ts-sdk", slot, version: "unknown", stderrTail: conn?.stderr().slice(-1000) ?? "" },
     error,

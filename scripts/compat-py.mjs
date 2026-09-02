@@ -59,7 +59,8 @@ if (!result) {
   });
 } else {
   const version = result.sdkVersion ?? mcpVersion ?? "unknown";
-  cell = baseCell(id, "compat", result.ok ? "pass" : "fail", result.ok ? `${result.toolCount} tools via mcp ${version}` : `${result.error?.code}: ${String(result.error?.cause ?? "").slice(0, 80)}`, {
+  if (!result.ok && /401|unauthorized/i.test(String(result.error?.cause ?? ""))) result.error = { code: "AUTH_REQUIRED", cause: result.error?.cause ?? "401", fix: "Add an Authorization header or OAuth refresh credentials to the enrollment." };
+  cell = baseCell(id, "compat", result.ok ? "pass" : result.error?.code === "AUTH_REQUIRED" ? "skip" : "fail", result.ok ? `${result.toolCount} tools via mcp ${version}` : `${result.error?.code}: ${String(result.error?.cause ?? "").slice(0, 80)}`, {
     durationMs: result.durationMs ?? Date.now() - t0,
     detail: { client: "py-sdk", slot, version, toolCount: result.toolCount ?? 0, protocolVersion: result.protocolVersion ?? null, stderrTail: result.ok ? "" : stderrTail },
     ...(result.ok ? {} : { error: { ...result.error, retryable: result.error?.code === "TIMEOUT" } }),

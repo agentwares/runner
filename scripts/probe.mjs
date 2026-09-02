@@ -81,7 +81,7 @@ try {
   process.exit(tools.length ? 0 : 1);
 } catch (e) {
   const error = classifyError(e);
-  const install = baseCell(`install:${host}`, "install", "fail", `${error.code}: ${error.cause.slice(0, 80)}`, {
+  const install = baseCell(`install:${host}`, "install", error.code === "AUTH_REQUIRED" ? "skip" : "fail", error.code === "AUTH_REQUIRED" ? "needs credentials (401)" : `${error.code}: ${error.cause.slice(0, 80)}`, {
     durationMs: Date.now() - t0,
     detail: { spec: specText, node: process.version, arch: process.arch, server: null, toolCount: 0, stderrTail: conn?.stderr().slice(-1500) ?? "" },
     error,
