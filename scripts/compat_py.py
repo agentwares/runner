@@ -13,6 +13,27 @@ import sys
 import time
 
 
+def attr(obj, *names):
+    """First present attribute — mcp 2.x is snake_case, 1.x was camelCase."""
+    for n in names:
+        v = getattr(obj, n, None)
+        if v is not None:
+            return v
+    return None
+
+
+async def list_tools_page(session, cursor):
+    """tools/list one page. mcp 2.x takes params=PaginatedRequestParams, 1.x took cursor=."""
+    if not cursor:
+        return await session.list_tools()
+    try:
+        from mcp import types as mcp_types
+
+        return await session.list_tools(params=mcp_types.PaginatedRequestParams(cursor=cursor))
+    except TypeError:
+        return await session.list_tools(cursor=cursor)
+
+
 def parse_spec(spec: str):
     tokens = shlex.split(spec, posix=os.name != "nt")
     command, args = tokens[0], tokens[1:]
@@ -37,9 +58,21 @@ async def run(args):
     headers = json.loads(args.headers_json) if args.headers_json else {}
     t0 = time.time()
     if args.url:
-        from mcp.client.streamable_http import streamablehttp_client
+        import mcp.client.streamable_http as sh
 
-        ctx = streamablehttp_client(args.url, headers=headers or None)
+        if hasattr(sh, "streamable_http_client"):
+            # mcp 2.x renamed the factory and moved headers onto the http client.
+            if headers:
+                import httpx2
+
+                ctx = sh.streamable_http_client(
+                    args.url, http_client=httpx2.AsyncClient(headers=headers)
+                )
+            else:
+                ctx = sh.streamable_http_client(args.url)
+        else:
+            # mcp 1.x
+            ctx = sh.streamablehttp_client(args.url, headers=headers or None)
     else:
         from mcp.client.stdio import StdioServerParameters, stdio_client
 
@@ -53,19 +86,20 @@ async def run(args):
             tools = []
             cursor = None
             for _ in range(20):
-                res = await session.list_tools(cursor=cursor) if cursor else await session.list_tools()
+                res = await list_tools_page(session, cursor)
                 tools.extend(res.tools)
-                cursor = getattr(res, "nextCursor", None)
+                # mcp 1.x: nextCursor; mcp 2.x: next_cursor
+                cursor = attr(res, "next_cursor", "nextCursor")
                 if not cursor:
                     break
-            server = getattr(init, "serverInfo", None)
+            server = attr(init, "server_info", "serverInfo")
             return {
                 "ok": len(tools) > 0,
                 "sdkVersion": version,
                 "toolCount": len(tools),
                 "tools": [t.name for t in tools][:200],
                 "server": {"name": server.name, "version": server.version} if server else None,
-                "protocolVersion": getattr(init, "protocolVersion", None),
+                "protocolVersion": attr(init, "protocol_version", "protocolVersion"),
                 "durationMs": int((time.time() - t0) * 1000),
             }
 
