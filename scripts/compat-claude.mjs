@@ -62,7 +62,7 @@ const cliVersion = (version.stdout || "").trim().split(/\s+/)[0] || "unknown";
 
 if (url && (await needsAuth(url, job?.headers ?? {}))) {
   await emit(
-    baseCell(id, "compat", "skip", "needs credentials (401): claude -p cannot complete a browser OAuth flow", {
+    baseCell(id, "compat", "skip", "needs credentials (401): Claude Code cannot complete a browser OAuth flow unattended", {
       detail: { client: "claude-cli", slot: "cli", version: cliVersion },
       error: {
         code: "AUTH_REQUIRED",
