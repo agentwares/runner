@@ -11,6 +11,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { arg, baseCell, commonArgs, emit, fetchJob, hostId } from "./lib/cell.mjs";
+import { needsAuth } from "./lib/mcp.mjs";
 
 const spec = arg("spec");
 const url = arg("url");
@@ -25,6 +26,24 @@ if ((!spec && !url) || !["N", "N-1"].includes(slot)) {
 const job = await fetchJob(common.jobUrl, common.secret).catch(() => null);
 const host = hostId();
 const id = `compat:py-sdk@${slot}:${host}`;
+// The Python SDK reports transport failures as an opaque MCPError with no HTTP
+// status, so detect "this server needs credentials" up front the way the TS and
+// claude-cli cells do; otherwise an OAuth-protected server looks like a crash.
+if (url && (await needsAuth(url, job?.headers ?? {}))) {
+  await emit(
+    baseCell(id, "compat", "skip", "needs credentials (401)", {
+      detail: { client: "py-sdk", slot, version: mcpVersion ?? "unknown" },
+      error: {
+        code: "AUTH_REQUIRED",
+        cause: "unauthenticated initialize answered 401",
+        fix: "Add an Authorization header or OAuth refresh credentials to the enrollment.",
+        retryable: false,
+      },
+    }),
+    common,
+  );
+  process.exit(0);
+}
 const script = path.join(path.dirname(fileURLToPath(import.meta.url)), "compat_py.py");
 const pyArgs = [script, ...(url ? ["--url", url] : ["--spec", spec]), "--timeout", String(common.timeoutMs / 1000)];
 if (job?.headers && Object.keys(job.headers).length) pyArgs.push("--headers-json", JSON.stringify(job.headers));

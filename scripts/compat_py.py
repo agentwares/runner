@@ -13,6 +13,20 @@ import sys
 import time
 
 
+def describe(exc, depth=0):
+    """Flatten anyio/TaskGroup ExceptionGroups so the real cause (e.g. a 401)
+    reaches the cell instead of 'unhandled errors in a TaskGroup'."""
+    label = f"{type(exc).__name__}: {exc}".strip().rstrip(":")
+    subs = getattr(exc, "exceptions", None)
+    if subs and depth < 4:
+        inner = "; ".join(describe(s, depth + 1) for s in subs[:4])
+        return f"{label} [{inner}]" if inner else label
+    cause = getattr(exc, "__cause__", None) or getattr(exc, "__context__", None)
+    if cause is not None and depth < 4:
+        return f"{label} (caused by {describe(cause, depth + 1)})"
+    return label
+
+
 def attr(obj, *names):
     """First present attribute — mcp 2.x is snake_case, 1.x was camelCase."""
     for n in names:
@@ -120,7 +134,7 @@ def main():
     except FileNotFoundError as e:
         result = {"ok": False, "error": {"code": "SPAWN_ENOENT", "cause": str(e)[:500]}}
     except BaseException as e:  # noqa: BLE001 — anyio ExceptionGroups included
-        result = {"ok": False, "error": {"code": "CONNECT_FAILED", "cause": f"{type(e).__name__}: {str(e)[:500]}"}}
+        result = {"ok": False, "error": {"code": "CONNECT_FAILED", "cause": describe(e)[:500]}}
     try:
         import mcp
         from importlib.metadata import version as _v
