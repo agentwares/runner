@@ -12,7 +12,7 @@ Public GitHub Actions runner for **mcpcheck** (nightly checks for MCP publishers
 | `errors:<os>` (ubuntu)                 | `scripts/errors.mjs`                  | 10 malformed inputs per tool (generator vendored from `packages/mcp-checks`), raw responses; graded in agentcheck      |
 | `compat:ts-sdk@N / N-1:<os>`           | `scripts/compat-ts.mjs`               | official TypeScript SDK client, current and previous minor (`mcp-sdk-prev` alias)                                      |
 | `compat:py-sdk@N / N-1:<os>`           | `scripts/compat-py.mjs` + `compat_py.py` | official Python SDK client via `uv run --with mcp==<ver>` (or `--python <venv>` locally)                            |
-| `compat:claude-cli@cli:<os>` (ubuntu)  | `scripts/compat-claude.mjs`           | scripted `claude -p --mcp-config … --strict-mcp-config`; needs `ANTHROPIC_API_KEY` secret (API billing)                |
+| `compat:claude-cli@cli:<os>` (ubuntu)  | `scripts/compat-claude.mjs`           | `claude mcp add` + `claude mcp list` health check (a real `initialize` over Claude Code's own transport) in an isolated `CLAUDE_CONFIG_DIR`; no API key, spends no tokens. `--probe-tools` adds an opt-in `claude -p` tool enumeration |
 | `conformance:<os>` (ubuntu, remote)    | `scripts/conformance.mjs`             | generic `@modelcontextprotocol/conformance server` scenarios                                                           |
 
 OAuth conformance runs in agentcheck's tick (no machine needed) — see `packages/mcp-checks/src/oauth.ts`.

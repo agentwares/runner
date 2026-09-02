@@ -114,19 +114,15 @@ jobs:
         shell: bash
         run: node scripts/compat-py.mjs $TARGET $COMMON --slot N-1 --mcp-version $MCP_PY_PREV
 
-      - name: compat claude-cli (ubuntu only, needs ANTHROPIC_API_KEY)
+      # `claude mcp list` health-checks the server with a real initialize and
+      # spends no tokens, so this cell needs no ANTHROPIC_API_KEY.
+      - name: compat claude-cli (ubuntu only)
         if: ${{ contains(inputs.cells, 'compat') && matrix.os == 'ubuntu-latest' }}
         continue-on-error: true
         shell: bash
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
-          if [ -n "$ANTHROPIC_API_KEY" ]; then
-            npm i -g @anthropic-ai/claude-code >/dev/null 2>&1 || true
-            node scripts/compat-claude.mjs $TARGET $COMMON --catalog "$(ls out/catalog_*.json 2>/dev/null | head -1)"
-          else
-            echo "ANTHROPIC_API_KEY not set; claude-cli cell skipped"
-          fi
+          npm i -g @anthropic-ai/claude-code >/dev/null 2>&1 || true
+          node scripts/compat-claude.mjs $TARGET $COMMON --catalog "$(ls out/catalog_*.json 2>/dev/null | head -1)"
 
       - name: conformance (remote, ubuntu only)
         if: ${{ contains(inputs.cells, 'conformance') && inputs.server_url != '' && matrix.os == 'ubuntu-latest' }}
