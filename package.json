@@ -5,13 +5,16 @@
   "type": "module",
   "description": "Cross-OS clean-install and tools/list probe for MCP servers (mcpcheck runner)",
   "license": "MIT",
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "probe": "node scripts/probe.mjs",
     "post": "node scripts/post.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
+    "mcp-sdk-prev": "npm:@modelcontextprotocol/sdk@^1.29.0",
     "zod": "^4.5.4"
   }
 }
