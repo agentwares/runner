@@ -13,7 +13,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { arg, baseCell, commonArgs, emit, fetchJob, hostId } from "./lib/cell.mjs";
-import { parseSpec } from "./lib/mcp.mjs";
+import { needsAuth, parseSpec } from "./lib/mcp.mjs";
 
 const spec = arg("spec");
 const url = arg("url");
@@ -40,6 +40,14 @@ if (version.error || version.status !== 0) {
   process.exit(0);
 }
 const cliVersion = (version.stdout || "").trim().split(/\s+/)[0] || "unknown";
+if (url && (await needsAuth(url, job?.headers ?? {}))) {
+  const cell = baseCell(id, "compat", "skip", "needs credentials (401): claude -p cannot complete a browser OAuth flow", {
+    detail: { client: "claude-cli", slot: "cli", version: cliVersion },
+    error: { code: "AUTH_REQUIRED", cause: "unauthenticated initialize answered 401", fix: "Add a bearer token or OAuth refresh credentials to the enrollment; the runner then passes the access token as a header.", retryable: false },
+  });
+  await emit(cell, common);
+  process.exit(0);
+}
 
 const serverName = "target";
 const serverConfig = url

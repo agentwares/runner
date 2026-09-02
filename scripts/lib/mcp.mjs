@@ -98,7 +98,7 @@ export function classifyError(e) {
     ? "SPAWN_ENOENT"
     : /TIMEOUT|timed out|timeout/i.test(msg)
       ? "TIMEOUT"
-      : /401|unauthorized/i.test(msg)
+      : /401|unauthorized|invalid_token|invalid access token/i.test(msg)
         ? "AUTH_REQUIRED"
         : /404|405/.test(msg)
           ? "NOT_MCP_ENDPOINT"
@@ -114,4 +114,19 @@ export function classifyError(e) {
     CONNECT_FAILED: "See stderr below.",
   }[code];
   return { code, cause: msg.slice(0, 500), fix, retryable: code === "TIMEOUT" || code === "CONNECT_FAILED" };
+}
+
+/** True when an unauthenticated initialize is refused (401/403): cells that cannot authenticate should skip. */
+export async function needsAuth(url, headers = {}) {
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json, text/event-stream", ...headers },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "mcpcheck", version: "0.1.0" } } }),
+      signal: AbortSignal.timeout(15000),
+    });
+    return res.status === 401 || res.status === 403;
+  } catch {
+    return false;
+  }
 }

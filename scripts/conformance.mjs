@@ -11,6 +11,7 @@ import { mkdtempSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { arg, baseCell, commonArgs, emit, hostId } from "./lib/cell.mjs";
+import { needsAuth } from "./lib/mcp.mjs";
 
 const CONFORMANCE = "@modelcontextprotocol/conformance@0.1.16";
 const url = arg("url");
@@ -23,6 +24,14 @@ if (!url) {
 const host = hostId();
 const id = `conformance:${host}`;
 const t0 = Date.now();
+if (await needsAuth(url)) {
+  const cell = baseCell(id, "conformance", "skip", "needs credentials (401): the conformance client cannot complete OAuth", {
+    detail: { version: CONFORMANCE.split("@").pop(), scenarios: [] },
+    error: { code: "AUTH_REQUIRED", cause: "unauthenticated initialize answered 401", fix: "Add a bearer token to the enrollment to run protocol scenarios against an OAuth-protected server.", retryable: false },
+  });
+  await emit(cell, common);
+  process.exit(0);
+}
 const results = [];
 for (const scenario of scenarios) {
   const outDir = mkdtempSync(path.join(tmpdir(), "mcpcheck-conf-"));
