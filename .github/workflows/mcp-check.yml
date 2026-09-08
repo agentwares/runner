@@ -66,7 +66,11 @@ jobs:
       CALLBACK_URL: ${{ inputs.callback_url }}
       JOB_URL: ${{ inputs.job_url }}
       AGENTCHECK_CALLBACK_SECRET: ${{ secrets.AGENTCHECK_CALLBACK_SECRET }}
-      NPM_CONFIG_CACHE: ${{ runner.temp }}/npm-clean-cache
+      # `runner.temp` is not available in a job-level env block — only inside steps — and
+      # GitHub rejects the whole workflow at dispatch time with "Unrecognized named-value:
+      # 'runner'", so this never ran at all. `github.workspace` is valid here and is just as
+      # clean: it is a fresh checkout per run, which is the point of a clean-install probe.
+      NPM_CONFIG_CACHE: ${{ github.workspace }}/.npm-clean-cache
       npm_config_yes: "true"
       TARGET: ${{ inputs.server_url != '' && format('--url {0}', inputs.server_url) || format('--spec "{0}"', inputs.package_spec) }}
       COMMON: --out out --target-id "${{ inputs.target_id }}" --run-key "${{ inputs.run_key }}" --timeout ${{ inputs.timeout_ms }}
