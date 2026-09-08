@@ -72,8 +72,16 @@ jobs:
       # clean: it is a fresh checkout per run, which is the point of a clean-install probe.
       NPM_CONFIG_CACHE: ${{ github.workspace }}/.npm-clean-cache
       npm_config_yes: "true"
-      TARGET: ${{ inputs.server_url != '' && format('--url {0}', inputs.server_url) || format('--spec "{0}"', inputs.package_spec) }}
-      COMMON: --out out --target-id "${{ inputs.target_id }}" --run-key "${{ inputs.run_key }}" --timeout ${{ inputs.timeout_ms }}
+      # Passed as values, not as pre-joined argument strings. An unquoted expansion of a
+      # joined string word-splits on spaces, and by then its embedded quotes are literal
+      # characters rather than shell quoting — so a spec like `npx -y @org/server` reached
+      # the probe as its first token alone, which is every stdio server there is. Each step
+      # now builds its argv in bash, where quoting holds.
+      SPEC: ${{ inputs.package_spec }}
+      SERVER_URL: ${{ inputs.server_url }}
+      TARGET_ID: ${{ inputs.target_id }}
+      RUN_KEY: ${{ inputs.run_key }}
+      TIMEOUT_MS: ${{ inputs.timeout_ms }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -89,34 +97,52 @@ jobs:
         if: ${{ contains(inputs.cells, 'install') || contains(inputs.cells, 'catalog') }}
         continue-on-error: true
         shell: bash
-        run: node scripts/probe.mjs $TARGET $COMMON
+        run: |
+          if [ -n "$SERVER_URL" ]; then set -- --url "$SERVER_URL"; else set -- --spec "$SPEC"; fi
+          set -- "$@" --out out --target-id "$TARGET_ID" --run-key "$RUN_KEY" --timeout "$TIMEOUT_MS"
+          node scripts/probe.mjs "$@"
 
       - name: errors (ubuntu only)
         if: ${{ contains(inputs.cells, 'errors') && matrix.os == 'ubuntu-latest' }}
         continue-on-error: true
         shell: bash
-        run: node scripts/errors.mjs $TARGET $COMMON
+        run: |
+          if [ -n "$SERVER_URL" ]; then set -- --url "$SERVER_URL"; else set -- --spec "$SPEC"; fi
+          set -- "$@" --out out --target-id "$TARGET_ID" --run-key "$RUN_KEY" --timeout "$TIMEOUT_MS"
+          node scripts/errors.mjs "$@"
 
       - name: compat ts-sdk N
         if: ${{ contains(inputs.cells, 'compat') }}
         continue-on-error: true
         shell: bash
-        run: node scripts/compat-ts.mjs $TARGET $COMMON --slot N
+        run: |
+          if [ -n "$SERVER_URL" ]; then set -- --url "$SERVER_URL"; else set -- --spec "$SPEC"; fi
+          set -- "$@" --out out --target-id "$TARGET_ID" --run-key "$RUN_KEY" --timeout "$TIMEOUT_MS"
+          node scripts/compat-ts.mjs "$@"  --slot N
       - name: compat ts-sdk N-1
         if: ${{ contains(inputs.cells, 'compat') }}
         continue-on-error: true
         shell: bash
-        run: node scripts/compat-ts.mjs $TARGET $COMMON --slot N-1
+        run: |
+          if [ -n "$SERVER_URL" ]; then set -- --url "$SERVER_URL"; else set -- --spec "$SPEC"; fi
+          set -- "$@" --out out --target-id "$TARGET_ID" --run-key "$RUN_KEY" --timeout "$TIMEOUT_MS"
+          node scripts/compat-ts.mjs "$@"  --slot N-1
       - name: compat py-sdk N
         if: ${{ contains(inputs.cells, 'compat') }}
         continue-on-error: true
         shell: bash
-        run: node scripts/compat-py.mjs $TARGET $COMMON --slot N --mcp-version $MCP_PY_N
+        run: |
+          if [ -n "$SERVER_URL" ]; then set -- --url "$SERVER_URL"; else set -- --spec "$SPEC"; fi
+          set -- "$@" --out out --target-id "$TARGET_ID" --run-key "$RUN_KEY" --timeout "$TIMEOUT_MS"
+          node scripts/compat-py.mjs "$@"  --slot N --mcp-version $MCP_PY_N
       - name: compat py-sdk N-1
         if: ${{ contains(inputs.cells, 'compat') }}
         continue-on-error: true
         shell: bash
-        run: node scripts/compat-py.mjs $TARGET $COMMON --slot N-1 --mcp-version $MCP_PY_PREV
+        run: |
+          if [ -n "$SERVER_URL" ]; then set -- --url "$SERVER_URL"; else set -- --spec "$SPEC"; fi
+          set -- "$@" --out out --target-id "$TARGET_ID" --run-key "$RUN_KEY" --timeout "$TIMEOUT_MS"
+          node scripts/compat-py.mjs "$@"  --slot N-1 --mcp-version $MCP_PY_PREV
 
       # `claude mcp list` health-checks the server with a real initialize and
       # spends no tokens, so this cell needs no ANTHROPIC_API_KEY.
@@ -126,13 +152,17 @@ jobs:
         shell: bash
         run: |
           npm i -g @anthropic-ai/claude-code >/dev/null 2>&1 || true
-          node scripts/compat-claude.mjs $TARGET $COMMON --catalog "$(ls out/catalog_*.json 2>/dev/null | head -1)"
+          if [ -n "$SERVER_URL" ]; then set -- --url "$SERVER_URL"; else set -- --spec "$SPEC"; fi
+          set -- "$@" --out out --target-id "$TARGET_ID" --run-key "$RUN_KEY" --timeout "$TIMEOUT_MS"
+          node scripts/compat-claude.mjs "$@" --catalog "$(ls out/catalog_*.json 2>/dev/null | head -1)"
 
       - name: conformance (remote, ubuntu only)
         if: ${{ contains(inputs.cells, 'conformance') && inputs.server_url != '' && matrix.os == 'ubuntu-latest' }}
         continue-on-error: true
         shell: bash
-        run: node scripts/conformance.mjs --url "${{ inputs.server_url }}" $COMMON
+        run: |
+          node scripts/conformance.mjs --url "$SERVER_URL" --out out \
+            --target-id "$TARGET_ID" --run-key "$RUN_KEY" --timeout "$TIMEOUT_MS"
 
       - uses: actions/upload-artifact@v4
         with:
