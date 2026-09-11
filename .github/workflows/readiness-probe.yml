@@ -1,0 +1,67 @@
+# readiness-probe — copy to agentwares/runner as .github/workflows/readiness-probe.yml
+# together with assets/readiness-scorer/probe/probe.mjs → scripts/readiness-probe.mjs.
+# Owned by P1-B / INFRA (the runner repo); authored by A1. Needs one repository
+# secret: READINESS_CALLBACK_SECRET (same value as the scorer's Vercel env).
+#
+# Dispatched by the scorer (POST /api/scans → workflow_dispatch) only after the
+# requester verified the domain (DNS TXT / meta tag / .well-known). The probe
+# never solves CAPTCHAs; it records that one was seen and stops.
+name: readiness-probe
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: signup URL to probe (domain already verified by the scorer)
+        required: true
+        type: string
+      scan_id:
+        description: scorer scan id (idempotency key for the callback)
+        required: true
+        type: string
+      callback_url:
+        description: where to POST the signed evidence (optional; artifact is always uploaded)
+        required: false
+        type: string
+      timeout_ms:
+        description: total probe budget in milliseconds
+        required: false
+        default: "120000"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: readiness-${{ inputs.scan_id }}
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install Playwright (pinned; browsers cached by version)
+        run: |
+          npm i --no-save --no-audit --no-fund playwright@1.61.1
+          npx playwright install --with-deps chromium
+      - name: Probe
+        id: probe
+        continue-on-error: true
+        run: node scripts/readiness-probe.mjs --url "${{ inputs.url }}" --scan-id "${{ inputs.scan_id }}" --out evidence.json --timeout "${{ inputs.timeout_ms }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: evidence-${{ inputs.scan_id }}
+          path: evidence.json
+          if-no-files-found: warn
+      - name: Post evidence
+        if: ${{ inputs.callback_url != '' }}
+        run: node scripts/readiness-probe.mjs post --file evidence.json --scan-id "${{ inputs.scan_id }}" --url "${{ inputs.callback_url }}"
+        env:
+          READINESS_CALLBACK_SECRET: ${{ secrets.READINESS_CALLBACK_SECRET }}
+      - name: Fail job if the probe crashed
+        if: ${{ steps.probe.outcome == 'failure' }}
+        run: exit 1
