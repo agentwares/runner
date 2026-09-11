@@ -106,6 +106,10 @@ export function emptyEvidence(url) {
       hasEmail: false,
       hasPassword: false,
       oauthProviders: /** @type {string[]} */ ([]),
+      apiSignup:
+        /** @type {{url: string|null, status: number|null, returnedCredential: boolean}|null} */ (
+          null
+        ),
       captcha: { detected: false, vendor: /** @type {string|null} */ (null) },
       tos: { checkbox: false, inlineText: false, linkUrl: /** @type {string|null} */ (null) },
       submit: {
@@ -610,6 +614,13 @@ export async function probe(url, opts = {}) {
     }
     ev.docs.pricingJson = { status: (await head(context, `${ev.origin}/pricing.json`)).status };
 
+    // 7. an API-first signup, verified rather than believed
+    //
+    // A POST that returns a credential with no mailbox and no browser is the most agent-native
+    // signup there is. It is discovered from what the site publishes about itself, then
+    // actually called with no credentials — a site cannot earn this by claiming it.
+    ev.signup.apiSignup = await probeApiSignup(context, ev);
+
     await context.close();
   } catch (err) {
     ev.errors.push(`probe: ${err instanceof Error ? err.message.split("\n")[0] : String(err)}`);
@@ -699,4 +710,87 @@ if (invokedDirectly) {
       process.exit(1);
     },
   );
+}
+
+/** A path that looks like it mints an account, taken from what the site publishes. */
+function signupPathsFrom(text, origin) {
+  const paths = new Set();
+  for (const m of text.matchAll(
+    /https?:\/\/[^\s"'`)<>\]]*?\/[a-z0-9/_-]*sign[_-]?up[a-z0-9/_-]*/gi,
+  )) {
+    try {
+      const u = new URL(m[0]);
+      if (u.origin === origin) paths.add(u.pathname);
+    } catch {
+      // not a URL we can use
+    }
+  }
+  for (const m of text.matchAll(/["'`](\/[a-z0-9/_-]*sign[_-]?up[a-z0-9/_-]*)["'`]/gi)) {
+    if (m[1]) paths.add(m[1]);
+  }
+  return [...paths].filter((p) => p.length < 120).slice(0, 6);
+}
+
+/** True when a response body carries something that reads as a credential. */
+function looksLikeCredential(body) {
+  if (!body) return false;
+  try {
+    const seen = new Set();
+    const walk = (v) => {
+      if (seen.has(v)) return false;
+      if (v && typeof v === "object") {
+        seen.add(v);
+        for (const [k, value] of Object.entries(v)) {
+          if (
+            /(^|_)(api_?key|key|token|secret|credential)$/i.test(k) &&
+            typeof value === "string" &&
+            value.length >= 16
+          ) {
+            return true;
+          }
+          if (walk(value)) return true;
+        }
+      }
+      return false;
+    };
+    return walk(JSON.parse(body));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Try the signup endpoints a site documents, and report whether one actually returns a key.
+ *
+ * Only paths the site itself publishes are tried, only POST, only with `accept_terms` — the
+ * one field an unattended signup conventionally needs — and nothing is retried. A 2xx that
+ * carries no credential does not count: an account an agent cannot then authenticate as is
+ * not a signup it completed.
+ */
+async function probeApiSignup(context, ev) {
+  const sources = [ev.docs.docsText ?? "", ev.docs.openapi.url ?? "", ev.docs.docsUrl ?? ""].join(
+    "\n",
+  );
+  const paths = signupPathsFrom(sources, ev.origin);
+  for (const extra of ["/api/v1/signup", "/api/signup", "/v1/signup"]) {
+    if (!paths.includes(extra)) paths.push(extra);
+  }
+  for (const path of paths.slice(0, 8)) {
+    const url = `${ev.origin}${path}`;
+    try {
+      const res = await context.request.post(url, {
+        data: { accept_terms: true },
+        headers: { "content-type": "application/json" },
+        failOnStatusCode: false,
+        timeout: 15_000,
+      });
+      const body = (await res.text()).slice(0, 4000);
+      if (res.status() >= 200 && res.status() < 300 && looksLikeCredential(body)) {
+        return { url, status: res.status(), returnedCredential: true };
+      }
+    } catch {
+      // unreachable or not a POST endpoint; try the next
+    }
+  }
+  return null;
 }
